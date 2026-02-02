@@ -214,46 +214,45 @@ void CalculateDynamicParams()
 //+------------------------------------------------------------------+
 void PlaceNextPendingOrder(ulong position_ticket)
 {
-   CPositionInfo pos, initial_pos;
+   CPositionInfo pos;
    if(!pos.SelectByTicket(position_ticket)) return;
-   
-   if(!initial_pos.SelectByTicket(g_initial_position_ticket)) return;
-   double initial_price = initial_pos.PriceOpen();
 
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
 
-   // SL va TP hisoblash
+   // SL/TP Sinxronizatsiya
    double sl, tp;
    if(pos.PositionType() == POSITION_TYPE_BUY) {
-      sl = initial_price - g_current_FullSL * point;
-      tp = initial_price + g_current_Profit * point;
+      sl = pos.PriceOpen() - g_current_FullSL * point;
+      tp = pos.PriceOpen() + g_current_Profit * point;
    } else {
-      sl = initial_price + g_current_FullSL * point;
-      tp = initial_price - g_current_Profit * point;
+      sl = pos.PriceOpen() + g_current_FullSL * point;
+      tp = pos.PriceOpen() - g_current_Profit * point;
    }
-   
-   // Pozitsiyani modifikatsiya qilishda narxni yaxlitlaymiz
-   g_trade.PositionModify(position_ticket, NormalizeDouble(sl, digits), NormalizeDouble(tp, digits));
+   if(MathAbs(pos.StopLoss()-sl)>point || MathAbs(pos.TakeProfit()-tp)>point)
+      g_trade.PositionModify(position_ticket, sl, tp);
 
+   // --- SMART LOT HISOBLASH ---
+   // Keyingi order qayerda ochilishini va uning TP si qayerda bo'lishini aniqlaymiz
    double pending_price = 0;
    double target_tp_price = 0;
    ENUM_ORDER_TYPE order_type;
    
    if(pos.PositionType() == POSITION_TYPE_BUY) {
       order_type = ORDER_TYPE_SELL_STOP;
-      pending_price = initial_price - g_current_Dist * point;
-      target_tp_price = pending_price - g_current_Profit * point;
+      pending_price = pos.PriceOpen() - g_current_Dist * point;
+      target_tp_price = pending_price - g_current_Profit * point; // Sell TP pastda bo'ladi
    } else {
       order_type = ORDER_TYPE_BUY_STOP;
-      pending_price = initial_price; 
-      target_tp_price = pending_price + g_current_Profit * point;
+      pending_price = pos.PriceOpen() + g_current_Dist * point;
+      target_tp_price = pending_price + g_current_Profit * point; // Buy TP tepada bo'ladi
    }
 
-   // Smart Lotni hisoblaymiz
+   // Shu target_tp_price ga yetganda barcha zararlarni yopadigan lotni topamiz
    double smart_lot = CalculateSmartLot(target_tp_price);
    
-   double p_sl, p_tp;
+   // Order qo'yish
+   double p_sl = 0, p_tp = 0;
    if(order_type == ORDER_TYPE_BUY_STOP) {
       p_sl = pending_price - g_current_FullSL * point;
       p_tp = pending_price + g_current_Profit * point;
@@ -262,13 +261,13 @@ void PlaceNextPendingOrder(ulong position_ticket)
       p_tp = pending_price - g_current_Profit * point;
    }
    
-   // Order ochishda barcha narxlarni NormalizeDouble qilish SHART
    g_trade.OrderOpen(_Symbol, order_type, smart_lot, 0.0, 
       NormalizeDouble(pending_price, digits), 
       NormalizeDouble(p_sl, digits), 
       NormalizeDouble(p_tp, digits), 
       ORDER_TIME_GTC, 0, "Hedge Smart");
 }
+
 //+------------------------------------------------------------------+
 //| Auto Trade                                                       |
 //+------------------------------------------------------------------+
@@ -311,19 +310,17 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
     CPositionInfo pos_info;
     if (!pos_info.SelectByTicket(trans.position)) return;
 
-    // Birinchi savdo ochilganda
     if (!g_is_active && (pos_info.Magic() == 0 || pos_info.Magic() == InpMagicNumber)) {
-        CalculateDynamicParams(); 
+        CalculateDynamicParams(); // Muhim!
         g_is_active = true;
         g_initial_position_ticket = pos_info.Ticket();
         g_orders_count = 1;
         PlaceNextPendingOrder(pos_info.Ticket());
-    } 
-    // Ping-pong davom etayotganda (limit/stop orderlar dealerga aylanganda)
-    else if (g_is_active && pos_info.Magic() == InpMagicNumber) {
-        // Faqat bizning zanjirga tegishli savdo ochilsa
-        g_orders_count++;
-        PlaceNextPendingOrder(pos_info.Ticket());
+    } else if (g_is_active && pos_info.Magic() == InpMagicNumber && pos_info.Ticket() == trans.position) {
+        if (pos_info.Ticket() != g_initial_position_ticket) {
+           g_orders_count++;
+           PlaceNextPendingOrder(pos_info.Ticket());
+        }
     }
 }
 
